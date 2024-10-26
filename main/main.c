@@ -30,10 +30,10 @@ static const char *TAG = "example";
 #define SERVO_TIMEBASE_RESOLUTION_HZ 1000000 // 1MHz, 1us per tick
 #define SERVO_TIMEBASE_PERIOD 20000          // 20000 ticks, 20ms
 
-#define SERVO1_PULSE_GPIO 9  // GPIO connects to the PWM signal line
-#define SERVO2_PULSE_GPIO 10 // GPIO connects to the PWM signal line
-#define SERVO3_PULSE_GPIO 13 // GPIO connects to the PWM signal line
-#define SERVO4_PULSE_GPIO 14 // GPIO connects to the PWM signal line
+#define FRONT_LEFT 13  // GPIO connects to the PWM signal line
+#define FRONT_RIGHT 10 // GPIO connects to the PWM signal line
+#define BACK_LEFT 14 // GPIO connects to the PWM signal line
+#define BACK_RIGHT 9 // GPIO connects to the PWM signal line
 
 mcpwm_cmpr_handle_t front_left = NULL;
 mcpwm_cmpr_handle_t front_right = NULL;
@@ -45,6 +45,11 @@ static esp_afe_sr_iface_t *afe_handle = NULL;
 static volatile int task_flag = 0;
 srmodel_list_t *models = NULL;
 static int play_voice = -2;
+
+void stand();
+void lower();
+void skae();
+void sit();
 
 void feed_Task(void *arg)
 {
@@ -80,7 +85,10 @@ void detect_Task(void *arg)
     model_iface_data_t *model_data = multinet->create(mn_name, 6000);
 
     esp_mn_commands_clear(); // Clear commands that already exist
-    esp_mn_commands_add(1, "Hi patti");
+    esp_mn_commands_add(1, "hi patti");
+    esp_mn_commands_add(2, "Sit");
+    esp_mn_commands_add(3, "Shake");
+    esp_mn_commands_add(4, "stand");
     esp_mn_commands_update(); // update commands
     int mu_chunksize = multinet->get_samp_chunksize(model_data);
     assert(mu_chunksize == afe_chunksize);
@@ -111,7 +119,29 @@ void detect_Task(void *arg)
             {
                 printf("TOP %d, command_id: %d, phrase_id: %d, string: %s, prob: %f\n",
                        i + 1, mn_result->command_id[i], mn_result->phrase_id[i], mn_result->string, mn_result->prob[i]);
-            }
+                if (mn_result->command_id[i] != 1 && !detect_flag)
+                {
+                    continue;
+                }
+                detect_flag = true;
+                if (mn_result->command_id[i] == 1)
+                {
+                    lower();
+                }
+                else if (mn_result->command_id[i] == 2)
+                {
+                    sit();
+                }
+                else if (mn_result->command_id[i] == 3)
+                {
+                    skae();
+                }
+                else if (mn_result->command_id[i] == 4)
+                {
+                    stand();
+                }
+                
+                            }
             printf("-----------listening-----------\n");
         }
 
@@ -141,7 +171,7 @@ static inline uint32_t example_angle_to_compare(int angle)
     return (angle - SERVO_MIN_DEGREE) * (SERVO_MAX_PULSEWIDTH_US - SERVO_MIN_PULSEWIDTH_US) / (SERVO_MAX_DEGREE - SERVO_MIN_DEGREE) + SERVO_MIN_PULSEWIDTH_US;
 }
 
-mcpwm_cmpr_handle_t init_servo1()
+mcpwm_cmpr_handle_t init_servo_fl()
 {
     ESP_LOGI(TAG, "Create timer and operator");
     mcpwm_timer_handle_t timer = NULL;
@@ -172,7 +202,7 @@ mcpwm_cmpr_handle_t init_servo1()
 
     mcpwm_gen_handle_t generator = NULL;
     mcpwm_generator_config_t generator_config = {
-        .gen_gpio_num = SERVO1_PULSE_GPIO,
+        .gen_gpio_num = FRONT_LEFT,
     };
     ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
 
@@ -194,7 +224,7 @@ mcpwm_cmpr_handle_t init_servo1()
     return comparator;
 }
 
-mcpwm_cmpr_handle_t init_servo2()
+mcpwm_cmpr_handle_t init_servo_fr()
 {
     ESP_LOGI(TAG, "Create timer and operator");
     mcpwm_timer_handle_t timer = NULL;
@@ -225,7 +255,7 @@ mcpwm_cmpr_handle_t init_servo2()
 
     mcpwm_gen_handle_t generator = NULL;
     mcpwm_generator_config_t generator_config = {
-        .gen_gpio_num = SERVO2_PULSE_GPIO,
+        .gen_gpio_num = FRONT_RIGHT,
     };
     ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
 
@@ -247,7 +277,7 @@ mcpwm_cmpr_handle_t init_servo2()
     return comparator;
 }
 
-mcpwm_cmpr_handle_t init_servo3()
+mcpwm_cmpr_handle_t init_servo_bl()
 {
     ESP_LOGI(TAG, "Create timer and operator");
     mcpwm_timer_handle_t timer = NULL;
@@ -278,7 +308,7 @@ mcpwm_cmpr_handle_t init_servo3()
 
     mcpwm_gen_handle_t generator = NULL;
     mcpwm_generator_config_t generator_config = {
-        .gen_gpio_num = SERVO3_PULSE_GPIO,
+        .gen_gpio_num = BACK_LEFT,
     };
     ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
 
@@ -300,7 +330,7 @@ mcpwm_cmpr_handle_t init_servo3()
     return comparator;
 }
 
-mcpwm_cmpr_handle_t init_servo4()
+mcpwm_cmpr_handle_t init_servo_br()
 {
     ESP_LOGI(TAG, "Create timer and operator");
     mcpwm_timer_handle_t timer = NULL;
@@ -331,7 +361,7 @@ mcpwm_cmpr_handle_t init_servo4()
 
     mcpwm_gen_handle_t generator = NULL;
     mcpwm_generator_config_t generator_config = {
-        .gen_gpio_num = SERVO4_PULSE_GPIO,
+        .gen_gpio_num = BACK_RIGHT,
     };
     ESP_ERROR_CHECK(mcpwm_new_generator(oper, &generator_config, &generator));
 
@@ -399,31 +429,50 @@ float map(float value, float fromLow, float fromHigh, float toLow, float toHigh)
 
 void lower()
 {
-    int angle = 55;
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(-angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(-angle)));
+    int angle = 50;
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(angle)));
+}
+
+void sit()
+{
+    int angle = 60;
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(angle)));
+    angle = -60;
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(angle)));
 }
 
 void stand()
 {
     int angle = 0;
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(-angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(angle)));
-    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(angle)));
 }
 
-void wave()
+void lay()
+{
+    int angle = 90;
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_left, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_right, example_angle_to_compare(-angle)));
+    ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(back_left, example_angle_to_compare(angle)));
+}
+
+void skae()
 {
     for (size_t i = 0; i < 5; i++)
     {
 
-        ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(-90)));
-        vTaskDelay(pdMS_TO_TICKS(900));
-        ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(-60)));
-        vTaskDelay(pdMS_TO_TICKS(900));
+        ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(90)));
+        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_ERROR_CHECK(mcpwm_comparator_set_compare_value(front_right, example_angle_to_compare(60)));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -456,14 +505,14 @@ void app_sr_init()
 void app_main(void)
 {
     app_sr_init();
-    icm42670_handle_t imu = icm42670_create(BSP_I2C_NUM, ICM42670_I2C_ADDRESS);
-    icm42670_gyro_set_pwr(imu, GYRO_PWR_LOWNOISE);
-    icm42670_acce_set_pwr(imu, GYRO_PWR_LOWNOISE);
+    // icm42670_handle_t imu = icm42670_create(BSP_I2C_NUM, ICM42670_I2C_ADDRESS);
+    // icm42670_gyro_set_pwr(imu, GYRO_PWR_LOWNOISE);
+    // icm42670_acce_set_pwr(imu, GYRO_PWR_LOWNOISE);
 
-    front_left = init_servo1();
-    front_right = init_servo2();
-    back_right = init_servo3();
-    back_left = init_servo4();
+    front_left = init_servo_fl();
+    front_right = init_servo_fr();
+    back_right = init_servo_br();
+    back_left = init_servo_bl();
 
     int angle = 0;
     bool step = false;
@@ -474,13 +523,14 @@ void app_main(void)
     float dt = 0.1;     // Adjust this based on your loop timing
     float alpha = 0.98; // Complementary filter constant
     icm42670_value_t acc, gyro;
-    while (1)
-    {
-        stand();
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        lower();
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        wave();
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
+
+    lay();
+    // while (1)
+    // {
+    //     lay();
+    //     vTaskDelay(pdMS_TO_TICKS(1000));
+    //     stand();
+    //     vTaskDelay(pdMS_TO_TICKS(1000));
+    // }
+    
 }
